@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Lane Guard</title>
+<style>
+body { min-width: 420px; max-width: 760px; margin: 32px auto; padding: 0 24px; font: 16px Georgia, serif; color: #183d39; background: #f4f0e5; }
+button { padding: 10px 16px; cursor: pointer; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px monospace; }
+</style>
+<h1>Environment isolation</h1>
+<p>Only explicitly bound tabs are guarded. Every other tab keeps its normal routing.</p>
+<p>Bind each task tab before navigating it. New tabs and popups are not covered automatically.
+Gated targets keep their first-request admission page.</p>
+<button id="init">Initialize guard</button>
+<button id="status">Show guard state</button>
+<pre id="result">Ready. Use this page in a browser tab for automation.</pre>
+<script src="control.js"></script>
+</html>

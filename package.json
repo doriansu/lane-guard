@@ -1,0 +1,13 @@
+{
+  "name": "lane-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Per-tab environment isolation for AI browser automation.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "fixture": "python3 fixture.py",
+    "package": "npm test && python3 scripts/package-local.py"
+  }
+}
