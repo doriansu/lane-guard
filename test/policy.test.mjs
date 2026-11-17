@@ -56,7 +56,13 @@ test("task environment cannot change or take over a different task window", () =
 test("a tab that already reached a guarded target cannot be bound", () => {
   const arrived = { ...parent, url: "http://127.0.0.1:51843/__env_probe/page" };
   assert.throws(() => plan(initialState(), task, arrived), /fresh tab/);
+  // A blocked first navigation parks the tab on the gate page, which names the
+  // target in its hash; that tab is not fresh either.
+  const gated = { ...parent, url: "chrome-extension://test/gate.html#http://127.0.0.1:51843/__env_probe/page" };
+  assert.throws(() => plan(initialState(), task, gated), /fresh tab/);
   assert.equal(plan(initialState(), task, { ...parent, url: "https://elsewhere.example/" }).addRules.length, 3);
+  assert.equal(plan(initialState(), task, { ...parent, url: "chrome-extension://test/control.html" }).addRules.length, 3);
+  assert.equal(plan(initialState(), task, { ...parent, url: "chrome-extension://test/gate.html#https://elsewhere.example/" }).addRules.length, 3);
 });
 
 test("new tab inherits its task window without an opener", () => {

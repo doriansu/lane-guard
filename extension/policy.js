@@ -38,6 +38,16 @@ export function checkedUrl(value) {
   return url.href;
 }
 
+// The gate parks a blocked navigation on gate.html#<original URL>. A tab
+// sitting there already reached the target, so it is not a fresh tab either.
+export function arrivedAtGuard(tabUrl) {
+  if (!tabUrl) return false;
+  if (SCOPE_RE.test(tabUrl)) return true;
+  const hash = tabUrl.indexOf("#");
+  if (hash < 0 || !tabUrl.startsWith("chrome-extension://")) return false;
+  try { return SCOPE_RE.test(tabUrl.slice(hash + 1)); } catch { return false; }
+}
+
 // One redirect rule per gated target. Ids are reserved so `init` can replace
 // them without touching session rules owned by the coordinator.
 export function gateRules(extensionOrigin) {
@@ -112,7 +122,9 @@ export function plan(current, command, tab) {
     if (typeof command.env !== "string" || !ENV_NAME.test(command.env)) throw new Error("Invalid task or environment");
     // A tab that already reached a guarded target has sent unguarded requests;
     // binding it now would leave the task's earlier traffic in the wrong lane.
-    if (tab.url && SCOPE_RE.test(tab.url)) {
+    // A blocked first navigation parks the tab on the gate page, whose hash
+    // still names the target, so check both forms.
+    if (arrivedAtGuard(tab.url)) {
       throw new Error("Tab already reached a guarded target; bind a fresh tab before its first navigation");
     }
     const prior = state.tasks[command.taskId];
