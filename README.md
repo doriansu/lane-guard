@@ -65,17 +65,20 @@ await window.probe.call({
 
 Navigate the bound tab only after a reply with `ok: true` and
 `committed: true`. An environment is immutable for the lifetime of a task; to
-switch environments, stop the task and use a new task ID.
+switch environments, stop the task and use a new task ID. A tab that already
+reached a guarded target cannot be bound — bind a fresh tab before its first
+navigation, or its earlier requests are already in the wrong lane.
 
 Wrap agent actions so that a dead binding stops the run instead of silently
 continuing:
 
 ```js
-import { runGuardedSteps } from "./agent-guard.mjs";
+import { runLaneTask } from "./agent-guard.mjs";
 
-await runGuardedSteps({
+await runLaneTask({
   taskId: "task_example",
-  tabIds: [tab.id],
+  tabId: tab.id,
+  env: "staging",
   send: command => controlPage.evaluate(
     command => window.probe.call(command), command
   ),
@@ -85,8 +88,15 @@ await runGuardedSteps({
 });
 ```
 
-The runner checks the binding before and after every step and on a heartbeat.
-On any failure it stops the task and refuses to execute the remaining steps.
+`runLaneTask` initializes the guard, binds the tab, checks the binding before
+and after every step and on a heartbeat, then revokes the task on every path —
+success, step failure, or an unanswered bind. The remaining steps never run
+after a failure. Binding before navigation and revoking afterwards are
+orderings the runner owns, not steps the caller is trusted to perform.
+
+`runGuardedSteps` is the lower-level half. It requires `tabIds`; a step not tied
+to a declared, bound tab cannot be checked, so it would only fail after the
+wrong request had already gone out.
 
 ## Local end-to-end check
 

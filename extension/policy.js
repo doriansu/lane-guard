@@ -110,6 +110,11 @@ export function plan(current, command, tab) {
   let change;
   if (command.type === "bindTask") {
     if (typeof command.env !== "string" || !ENV_NAME.test(command.env)) throw new Error("Invalid task or environment");
+    // A tab that already reached a guarded target has sent unguarded requests;
+    // binding it now would leave the task's earlier traffic in the wrong lane.
+    if (tab.url && SCOPE_RE.test(tab.url)) {
+      throw new Error("Tab already reached a guarded target; bind a fresh tab before its first navigation");
+    }
     const prior = state.tasks[command.taskId];
     if (!prior && Object.keys(state.tasks).length >= MAX_TASKS) throw new Error("Task capacity reached; restart browser after all tasks finish");
     if (prior && (prior.env !== command.env || prior.status !== "active")) {

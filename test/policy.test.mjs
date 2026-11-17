@@ -53,6 +53,12 @@ test("task environment cannot change or take over a different task window", () =
   assert.throws(() => plan(state, { type: "bindManual" }, parent), /ownership/);
 });
 
+test("a tab that already reached a guarded target cannot be bound", () => {
+  const arrived = { ...parent, url: "http://127.0.0.1:51843/__env_probe/page" };
+  assert.throws(() => plan(initialState(), task, arrived), /fresh tab/);
+  assert.equal(plan(initialState(), task, { ...parent, url: "https://elsewhere.example/" }).addRules.length, 3);
+});
+
 test("new tab inherits its task window without an opener", () => {
   const { state } = plan(initialState(), task, parent);
   const result = plan(state, { type: "gate", url: target }, { id: 11, windowId: 100 });
