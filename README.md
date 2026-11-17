@@ -50,7 +50,45 @@ Design decisions worth knowing before you rely on it:
 
 ## Usage
 
-Get the task tab's ID from that tab, then bind it from the control tab:
+Wrap agent actions so that a dead binding stops the run instead of silently
+continuing:
+
+```js
+import { runLaneTask } from "./agent-guard.mjs";
+
+const { taskId, results, observations } = await runLaneTask({
+  tabId: tab.id,
+  env: "staging",
+  send: command => controlPage.evaluate(
+    command => window.probe.call(command), command
+  ),
+  steps: [async ({ signal }) => {
+    // Operate only the declared, bound page. Honor the signal.
+  }],
+});
+```
+
+`runLaneTask` generates the task ID, initializes the guard, binds the tab,
+checks the binding before and after every step and on a heartbeat, then revokes
+the task on every path — success, step failure, or an unanswered bind. The
+remaining steps never run after a failure. Binding before navigation and
+revoking afterwards are orderings the runner owns, not steps the caller is
+trusted to perform.
+
+The task ID is an internal handle, not a label: it namespaces the binding, pins
+the environment, and is the unit `stopTask` revokes. Callers never choose one.
+A stopped ID is a tombstone and cannot be reused, so a fresh ID per run is what
+keeps repeated runs from colliding.
+
+`observations` is the extension's `{ checked, mismatched }` count for the run,
+or `null` if it could not be read back. A non-zero `mismatched` means a request
+left in the wrong environment before the monitor could stop it; report it
+rather than treating the run as a pass.
+
+### Driving the commands directly
+
+`runLaneTask` is the supported path. If you need the raw protocol, you must
+supply the task ID yourself; bind from a control tab:
 
 ```js
 await window.probe.call({ type: "init" });
@@ -66,37 +104,13 @@ await window.probe.call({
 Navigate the bound tab only after a reply with `ok: true` and
 `committed: true`. An environment is immutable for the lifetime of a task; to
 switch environments, stop the task and use a new task ID. A tab that already
-reached a guarded target cannot be bound — bind a fresh tab before its first
-navigation, or its earlier requests are already in the wrong lane.
+reached a guarded target — including one parked on the admission gate — cannot
+be bound; bind a fresh tab before its first navigation, or its earlier requests
+are already in the wrong lane.
 
-Wrap agent actions so that a dead binding stops the run instead of silently
-continuing:
-
-```js
-import { runLaneTask } from "./agent-guard.mjs";
-
-await runLaneTask({
-  taskId: "task_example",
-  tabId: tab.id,
-  env: "staging",
-  send: command => controlPage.evaluate(
-    command => window.probe.call(command), command
-  ),
-  steps: [async ({ signal }) => {
-    // Operate only the declared, bound page. Honor the signal.
-  }],
-});
-```
-
-`runLaneTask` initializes the guard, binds the tab, checks the binding before
-and after every step and on a heartbeat, then revokes the task on every path —
-success, step failure, or an unanswered bind. The remaining steps never run
-after a failure. Binding before navigation and revoking afterwards are
-orderings the runner owns, not steps the caller is trusted to perform.
-
-`runGuardedSteps` is the lower-level half. It requires `tabIds`; a step not tied
-to a declared, bound tab cannot be checked, so it would only fail after the
-wrong request had already gone out.
+`runGuardedSteps` is the lower-level half of the runner. It takes an explicit
+`taskId` and requires `tabIds`; a step not tied to a declared, bound tab cannot
+be checked, so it would only fail after the wrong request had already gone out.
 
 ## Local end-to-end check
 

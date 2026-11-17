@@ -100,7 +100,9 @@ test("stopping a task removes only its rules and blocks future children", () => 
   assert.deepEqual(stopped.removeRuleIds, a.addRules.filter(rule => rule.action.type !== "block").map(rule => rule.id));
   assert.equal(stopped.state.tasks.task_B.status, "active");
   assert.throws(() => plan(stopped.state, { type: "gate", url: target }, { id: 11, windowId: 100 }), /blocked/);
-  assert.throws(() => plan(stopped.state, task, parent), /immutable/);
+  assert.throws(() => plan(stopped.state, task, parent), /no longer active/);
+  // The environment message is reserved for a task that is still active.
+  assert.throws(() => plan(stopped.state, { ...task, taskId: "task_B", env: "other" }, parent), /immutable/);
 });
 
 test("GET-only gate does not silently replay POST as GET", () => {
@@ -164,4 +166,26 @@ test("closing a popup does not stop its parent task", () => {
   assert.equal(closed.state.tasks.task_A.status, "active");
   assert.deepEqual(closed.removeRuleIds.slice().sort(), child.addRules.map(rule => rule.id).sort());
   assert.ok(closed.state.tabs[10]);
+});
+
+test("closing the last bound tab of a stopped task releases its window", () => {
+  const bound = plan(initialState(), task, parent);
+  const stopped = plan(bound.state, { type: "stopTask", taskId: "task_A" });
+  const closed = plan(stopped.state, { type: "removeTab", tabId: 10 });
+  assert.deepEqual(closed.state.windows, {});
+  // The same window can now host a different task.
+  const next = plan(closed.state, { ...task, taskId: "task_B", env: "prod" },
+    { id: 11, windowId: 100 });
+  assert.equal(next.env, "prod");
+});
+
+test("a window keeps its owner while an active task still has a bound tab in it", () => {
+  const bound = plan(initialState(), task, parent);
+  const second = plan(bound.state, { type: "gate", url: target }, { id: 11, windowId: 100 });
+  const closed = plan(second.state, { type: "removeTab", tabId: 10 });
+  assert.deepEqual(closed.state.windows[100], { kind: "task", taskId: "task_A" });
+  // A stopped task with no remaining bound tab in the window releases it.
+  const stopped = plan(closed.state, { type: "stopTask", taskId: "task_A" });
+  const last = plan(stopped.state, { type: "removeTab", tabId: 11 });
+  assert.deepEqual(last.state.windows, {});
 });

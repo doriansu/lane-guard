@@ -129,7 +129,12 @@ export function plan(current, command, tab) {
     }
     const prior = state.tasks[command.taskId];
     if (!prior && Object.keys(state.tasks).length >= MAX_TASKS) throw new Error("Task capacity reached; restart browser after all tasks finish");
-    if (prior && (prior.env !== command.env || prior.status !== "active")) {
+    // A stopped task is a tombstone: its ID cannot be rebound or reused, even
+    // with the same environment. Only a fresh ID starts a new task.
+    if (prior && prior.status !== "active") {
+      throw new Error("Task is no longer active; create a new task with a new ID");
+    }
+    if (prior && prior.env !== command.env) {
       throw new Error("Task environment is immutable; create a new task");
     }
     state.tasks[command.taskId] = prior || {
@@ -159,8 +164,20 @@ export function plan(current, command, tab) {
         .flatMap(binding => binding.ids.slice(0, 2)),
     };
   } else if (command.type === "removeTab") {
-    change = { addRules: [], removeRuleIds: state.tabs[command.tabId]?.ids || [] };
+    const binding = state.tabs[command.tabId];
+    change = { addRules: [], removeRuleIds: binding?.ids || [] };
     delete state.tabs[command.tabId];
+    // Window ownership exists so new tabs can inherit an owner. Once the last
+    // bound tab in a window is gone and its task is no longer active, the
+    // ownership is a stale tombstone: keeping it would block a new task from
+    // binding in that window forever, even though the contract says closing
+    // the stopped task's tabs is what releases the session.
+    if (binding) {
+      const owner = state.windows[binding.windowId];
+      const stillBound = Object.values(state.tabs).some(b => b.windowId === binding.windowId);
+      const activeTask = owner?.kind === "task" && state.tasks[owner.taskId]?.status === "active";
+      if (!stillBound && !activeTask) delete state.windows[binding.windowId];
+    }
   } else if (command.type === "removeWindow") {
     const owner = state.windows[command.windowId];
     const stopTask = owner?.kind === "task" &&

@@ -107,20 +107,74 @@ function laneHarness(reply) {
   };
 }
 
-const laneTask = { taskId: "task_A", tabId: 10, env: "staging" };
+const laneTask = { tabId: 10, env: "staging" };
 
 test("lane task binds before the steps and revokes afterwards", async () => {
   const h = laneHarness(command => command.type === "init" ? { ok: true, ready: true }
     : command.type === "bindTask" ? { ok: true, committed: true }
-      : { ok: true, active: true, committed: true });
-  const results = await runLaneTask({ ...laneTask, ...h, steps: [async () => 1] });
-  assert.deepEqual(results, [1]);
+      : command.type === "status" ? { ok: true, observations: {} }
+        : { ok: true, active: true, committed: true });
+  const run = await runLaneTask({ ...laneTask, ...h, steps: [async () => 1] });
+  assert.deepEqual(run.results, [1]);
   const types = h.sent.map(command => command.type);
   assert.equal(types[0], "init");
   assert.equal(types[1], "bindTask");
-  assert.equal(types.at(-1), "stopTask");
-  assert.ok(types.slice(2, -1).every(type => type === "assertTask"));
-  assert.deepEqual(h.sent[1], { type: "bindTask", taskId: "task_A", env: "staging", tabId: 10 });
+  assert.ok(types.includes("stopTask"));
+  assert.ok(types.slice(2, types.indexOf("stopTask")).every(type => type === "assertTask"));
+  assert.equal(h.sent[1].env, "staging");
+  assert.equal(h.sent[1].tabId, 10);
+});
+
+test("the task ID is generated per run and shared by every command", async () => {
+  const h = laneHarness(command => command.type === "init" ? { ok: true, ready: true }
+    : command.type === "bindTask" ? { ok: true, committed: true }
+      : command.type === "status" ? { ok: true, observations: {} }
+        : { ok: true, active: true, committed: true });
+  const first = await runLaneTask({ ...laneTask, ...h, steps: [] });
+  const second = await runLaneTask({ ...laneTask, ...h, steps: [] });
+  assert.match(first.taskId, /^task_[A-Za-z0-9_-]{1,40}$/);
+  assert.notEqual(first.taskId, second.taskId);
+  for (const command of h.sent) {
+    if (command.taskId) assert.ok([first.taskId, second.taskId].includes(command.taskId));
+  }
+  const ids = h.sent.filter(command => command.type === "bindTask").map(command => command.taskId);
+  assert.deepEqual(ids, [first.taskId, second.taskId]);
+});
+
+test("an explicit task ID is still accepted", async () => {
+  const h = laneHarness(command => command.type === "init" ? { ok: true, ready: true }
+    : command.type === "bindTask" ? { ok: true, committed: true }
+      : command.type === "status" ? { ok: true, observations: {} }
+        : { ok: true, active: true, committed: true });
+  const run = await runLaneTask({ ...laneTask, ...h, taskId: "task_A", steps: [] });
+  assert.equal(run.taskId, "task_A");
+  assert.equal(h.sent.find(command => command.type === "bindTask").taskId, "task_A");
+});
+
+test("a run reports the counters it observed", async () => {
+  const counters = { checked: 3, mismatched: 1 };
+  let bound;
+  const run = await runLaneTask({
+    ...laneTask,
+    send: async command => {
+      if (command.type === "init") return { ok: true, ready: true };
+      if (command.type === "bindTask") { bound = command.taskId; return { ok: true, committed: true }; }
+      if (command.type === "status") return { ok: true, observations: { [bound]: counters } };
+      return { ok: true, active: true, committed: true };
+    },
+    steps: [async () => 1],
+  });
+  assert.deepEqual(run.observations, counters);
+  assert.equal(bound, run.taskId);
+});
+
+test("an unreadable counter readback is null rather than a silent zero", async () => {
+  const h = laneHarness(command => command.type === "init" ? { ok: true, ready: true }
+    : command.type === "bindTask" ? { ok: true, committed: true }
+      : command.type === "status" ? { ok: false, error: "Unavailable" }
+        : { ok: true, active: true, committed: true });
+  const run = await runLaneTask({ ...laneTask, ...h, steps: [] });
+  assert.equal(run.observations, null);
 });
 
 test("a guard that cannot initialize never binds", async () => {
@@ -174,6 +228,12 @@ test("a completed run fails loudly when the admission cannot be revoked", async 
   await assert.rejects(runLaneTask({
     ...laneTask, ...h, steps: [async () => 1],
   }), error => /could not be revoked/.test(error.message) && error.stopResult.ok === false);
+});
+
+test("failures carry the task ID they used", async () => {
+  const h = laneHarness(() => ({ ok: false, error: "Invalid sender" }));
+  await assert.rejects(runLaneTask({ ...laneTask, ...h, steps: [] }),
+    error => /^task_/.test(error.taskId));
 });
 
 test("lane task options are validated before any command is sent", async () => {

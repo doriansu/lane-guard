@@ -19,51 +19,67 @@ async function revoke(dispatch, taskId) {
   catch (error) { return { ok: false, error: String(error) }; }
 }
 
+// The task ID namespaces the binding and is the unit stopTask revokes. It is an
+// internal handle, so callers never choose one; a stopped ID is a tombstone and
+// must not be reused, which a fresh ID per run guarantees.
+function newTaskId() {
+  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36) + Math.random().toString(36);
+  return `task_${random.replace(/[^A-Za-z0-9]/g, "").slice(0, 32)}`;
+}
+
+// Reading the counters back is part of the run, not an optional follow-up: a
+// mismatch means a request left in the wrong environment and must be reported.
+async function observations(dispatch, taskId) {
+  try {
+    const reply = await dispatch({ type: "status" });
+    return reply?.ok ? reply.observations?.[taskId] ?? null : null;
+  } catch { return null; }
+}
+
 // Binds one tab, runs the steps under the guarded runner, and revokes the task
 // whatever happens. Binding before navigation and stopping afterwards are
 // safety orderings, not advice, so the caller never issues either command.
 export async function runLaneTask({
-  send, taskId, tabId, env, steps,
+  send, tabId, env, steps, taskId,
   commandTimeoutMs = 5000, stepTimeoutMs = 60000, heartbeatMs = 500,
 }) {
   if (typeof send !== "function" || !Array.isArray(steps) || !steps.every(step => typeof step === "function") ||
-      typeof taskId !== "string" || !TASK_ID.test(taskId) ||
+      (taskId !== undefined && (typeof taskId !== "string" || !TASK_ID.test(taskId))) ||
       !Number.isSafeInteger(tabId) || tabId < 0 ||
       typeof env !== "string" || !ENV_NAME.test(env) ||
       ![commandTimeoutMs, stepTimeoutMs, heartbeatMs].every(ms => Number.isSafeInteger(ms) && ms > 0)) {
     throw new Error("Invalid lane task options");
   }
+  const id = taskId ?? newTaskId();
   const dispatch = command => bounded(() => send(command), commandTimeoutMs, "Extension command timed out");
+  const fail = (message, extra = {}) => Object.assign(new Error(message), { taskId: id, ...extra });
   // init is idempotent and re-installs the static gate rules after a restart.
   const ready = await dispatch({ type: "init" });
   if (!ready?.ok || !ready.ready) {
-    throw new Error(`Guard did not initialize: ${ready?.error || "no acknowledgement"}`);
+    throw fail(`Guard did not initialize: ${ready?.error || "no acknowledgement"}`);
   }
   // An unanswered bind may still have committed, so revoke before reporting.
   let bind;
   try {
-    bind = await dispatch({ type: "bindTask", taskId, env, tabId });
+    bind = await dispatch({ type: "bindTask", taskId: id, env, tabId });
   } catch (error) {
-    const failure = new Error(`Binding uncertain: ${error.message}`);
-    failure.stopResult = await revoke(dispatch, taskId);
-    throw failure;
+    throw fail(`Binding uncertain: ${error.message}`, { stopResult: await revoke(dispatch, id) });
   }
   if (!bind?.ok || !bind.committed) {
-    const failure = new Error(`Binding failed: ${bind?.error || "no acknowledgement"}`);
-    failure.stopResult = await revoke(dispatch, taskId);
-    throw failure;
+    throw fail(`Binding failed: ${bind?.error || "no acknowledgement"}`,
+      { stopResult: await revoke(dispatch, id) });
   }
   const results = await runGuardedSteps({
-    send, taskId, tabIds: [tabId], steps, commandTimeoutMs, stepTimeoutMs, heartbeatMs,
+    send, taskId: id, tabIds: [tabId], steps, commandTimeoutMs, stepTimeoutMs, heartbeatMs,
   });
-  const stop = await revoke(dispatch, taskId);
+  const stop = await revoke(dispatch, id);
+  const observed = await observations(dispatch, id);
   if (!stop.ok || !stop.committed) {
-    const failure = new Error(
-      `Steps completed but the task admission could not be revoked: ${stop.error || "no acknowledgement"}`);
-    failure.stopResult = stop;
-    throw failure;
+    throw fail(
+      `Steps completed but the task admission could not be revoked: ${stop.error || "no acknowledgement"}`,
+      { stopResult: stop, observations: observed });
   }
-  return results;
+  return { taskId: id, results, observations: observed };
 }
 
 export async function runGuardedSteps({
